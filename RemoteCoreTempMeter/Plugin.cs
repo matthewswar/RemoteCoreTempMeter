@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -94,7 +95,6 @@ namespace RemoteCoreTempMeter
             catch (System.Exception ex)
             {
                 new API(rm).LogF(API.LogType.Error, "RemoteCoreTempMeter.dll: Unable to reload: {0}", ex.Message);
-                throw;
             }
         }
 
@@ -154,25 +154,31 @@ namespace RemoteCoreTempMeter
             }
 
             string value = String.Empty;
-            CoreTempPayload? payload = _client.LatestPayload;
-            if (payload.HasValue)
+            if (measure.Type == MeasureType.TjMax)
             {
-                switch (measure.Type)
+                value = measure.MaxTemp.ToString();
+            }
+            else
+            {
+                CoreTempPayload? payload = _client.LatestPayload;
+                if (payload.HasValue)
                 {
-                    case MeasureType.Temperature:
-                        value = payload.Value.CpuInfo.fTemp[measure.CoreIndex].ToString();
-                        break;
-                    case MeasureType.TjMax:
-                        value = payload.Value.CpuInfo.uiTjMax[0].ToString();
-                        break;
-                    case MeasureType.Speed:
-                        value = payload.Value.CpuInfo.fCPUSpeed.ToString();
-                        break;
+                    switch (measure.Type)
+                    {
+                        case MeasureType.Temperature:
+                            value = payload.Value.CpuInfo.fTemp[measure.CoreIndex].ToString();
+                            break;
+                        case MeasureType.TjMax:
+                            value = payload.Value.CpuInfo.uiTjMax[0].ToString();
+                            break;
+                        case MeasureType.Speed:
+                            value = payload.Value.CpuInfo.fCPUSpeed.ToString();
+                            break;
+                    }
                 }
             }
-            
-            measure.buffer = Marshal.StringToHGlobalUni(value);
 
+            measure.buffer = Marshal.StringToHGlobalUni(value);
             return measure.buffer;
         }
 
@@ -206,7 +212,6 @@ namespace RemoteCoreTempMeter
 
     internal class BufferedTcpClient : IDisposable
     {
-        private static readonly int BUFFER_SIZE = 1024;
         public string Hostname { get; private set; }
 
         public int Port { get; private set; }
@@ -227,30 +232,39 @@ namespace RemoteCoreTempMeter
         {
             Hostname = hostname;
             Port = port;
-            _client = new TcpClient(hostname, port);
             _messageBuilder = new StringBuilder();
         }
 
         public void Start()
         {
-            byte[] data = new byte[BUFFER_SIZE];
-            NetworkStream stream = _client.GetStream();
+            NetworkStream stream = null;
             _running = true;
             Thread t = new Thread(new ThreadStart((() =>
             {
                 while (_running)
                 {
+                    if (stream == null)
+                    {
+                        try
+                        {
+                            _client = new TcpClient(Hostname, Port);
+                            stream = _client.GetStream();
+                        }
+                        catch
+                        {
+                            Thread.Sleep(TimeSpan.FromMinutes(5));
+                        }
+                    }
                     try
                     {
                         AssembleMessage(stream);
                     }
                     catch
                     {
-                        Thread.Sleep(TimeSpan.FromSeconds(5));
+                        LatestPayload = null;
+                        stream = null;
                         _client.Close();
                         _client.Dispose();
-                        _client = new TcpClient(Hostname, Port);
-                        stream = _client.GetStream();
                     }
                 }
             })));
@@ -264,9 +278,13 @@ namespace RemoteCoreTempMeter
 
         private void AssembleMessage(NetworkStream stream)
         {
-            while (stream.CanRead)
+            while (stream != null && stream.CanRead)
             {
-                char next = (char)stream.ReadByte();
+                int raw = stream.ReadByte();
+                if (raw < 0)
+                    throw new EndOfStreamException();
+
+                char next = (char)raw;
                 if (Char.IsWhiteSpace(next))
                 {
                     continue;
