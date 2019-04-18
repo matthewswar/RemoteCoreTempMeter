@@ -1,0 +1,1 @@
+dotnet build RemoteCoreTempMeter.sln  --verbosity n -p:Platform=x64 -c:"Release"
