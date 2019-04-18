@@ -71,8 +71,11 @@ namespace RemoteCoreTempMeter
         [DllExport]
         public static void Finalize(IntPtr data)
         {
-            _client.Stop();
-            _client.Dispose();
+            if (_client != null)
+            {
+                _client.Stop();
+                _client.Dispose();
+            }
             Measure measure = (Measure)data;
             if (measure.buffer != IntPtr.Zero)
             {
@@ -237,35 +240,17 @@ namespace RemoteCoreTempMeter
             {
                 while (_running)
                 {
-                    while (stream.CanRead)
+                    try
                     {
-                        char next = (char)stream.ReadByte();
-                        if (Char.IsWhiteSpace(next))
-                        {
-                            continue;
-                        }
-
-                        if (next == '{')
-                        {
-                            _openBracketCount++;
-                        }
-                        else if (next == '}')
-                        {
-                            _openBracketCount--;
-                        }
-                        _messageBuilder.Append(next);
-                        if (_openBracketCount == 0)
-                        {
-                            LatestMessage = _messageBuilder.ToString();
-                            _messageBuilder.Clear();
-                            try
-                            {
-                                LatestPayload = LatestMessage.FromJson<CoreTempPayload>();
-                            }
-                            catch
-                            {
-                            }
-                        }
+                        AssembleMessage(stream);
+                    }
+                    catch
+                    {
+                        Thread.Sleep(TimeSpan.FromSeconds(5));
+                        _client.Close();
+                        _client.Dispose();
+                        _client = new TcpClient(Hostname, Port);
+                        stream = _client.GetStream();
                     }
                 }
             })));
@@ -275,6 +260,40 @@ namespace RemoteCoreTempMeter
         public void Stop()
         {
             _running = false;
+        }
+
+        private void AssembleMessage(NetworkStream stream)
+        {
+            while (stream.CanRead)
+            {
+                char next = (char)stream.ReadByte();
+                if (Char.IsWhiteSpace(next))
+                {
+                    continue;
+                }
+
+                if (next == '{')
+                {
+                    _openBracketCount++;
+                }
+                else if (next == '}')
+                {
+                    _openBracketCount--;
+                }
+                _messageBuilder.Append(next);
+                if (_openBracketCount == 0)
+                {
+                    LatestMessage = _messageBuilder.ToString();
+                    _messageBuilder.Clear();
+                    try
+                    {
+                        LatestPayload = LatestMessage.FromJson<CoreTempPayload>();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
         }
 
         #region IDisposable Support
